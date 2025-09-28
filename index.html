@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solana Node Multi-Tester (RPC + gRPC)</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@grpc/grpc-js@1.11.1/build/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@protobufjs@7.2.5/dist/protobuf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { PublicKey } = window.solanaWeb3;
+    const RPC_ENDPOINT = "http://192.168.0.196:8899";
+    const GRPC_ENDPOINT = "localhost:10000";
+
+    // Load Yellowstone .proto file for gRPC
+    const loadProto = async () => {
+      const response = await fetch("https://raw.githubusercontent.com/rpcpool/yellowstone-grpc/master/yellowstone-grpc-proto/yellowstone-grpc.proto");
+      const protoText = await response.text();
+      const root = protobuf.parse(protoText).root;
+      return root.lookupService("yellowstone_grpc_proto.Geyser");
+    };
+
+    const SolanaMultiTester = () => {
+      const [pubkey, setPubkey] = useState("");
+      const [slot, setSlot] = useState("");
+      const [signature, setSignature] = useState("");
+      const [programId, setProgramId] = useState("");
+      const [response, setResponse] = useState([]);
+      const [error, setError] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [tab, setTab] = useState("rpc"); // Toggle between 'rpc' and 'grpc'
+      const [client, setClient] = useState(null);
+      const [activeSubscriptions, setActiveSubscriptions] = useState({});
+
+      // Initialize gRPC client
+      useEffect(() => {
+        loadProto().then((service) => {
+          const client = new service(GRPC_ENDPOINT, grpc.credentials.createInsecure());
+          setClient(client);
+        }).catch((err) => setError(`Failed to load proto: ${err.message}`));
+      }, []);
+
+      // Clean up gRPC subscriptions on unmount
+      useEffect(() => {
+        return () => {
+          Object.values(activeSubscriptions).forEach(call => call.cancel());
+        };
+      }, [activeSubscriptions]);
+
+      // JSON-RPC request handler
+      const sendRpcRequest = async (method, params = []) => {
+        setLoading(true);
+        setError("");
+        setResponse([]);
+        try {
+          const response = await fetch(RPC_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method,
+              params,
+            }),
+          });
+          const data = await response.json();
+          if (data.error) {
+            setError(`RPC Error: ${JSON.stringify(data.error)}`);
+          } else {
+            setResponse([JSON.stringify(data.result, null, 2)]);
+          }
+        } catch (err) {
+          setError(`RPC Fetch Error: ${err.message}`);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // gRPC subscription handler
+      const startSubscription = (method, params) => {
+        if (!client) {
+          setError("gRPC client not initialized");
+          return;
+        }
+        setLoading(true);
+        setError("");
+        setResponse([]);
+
+        const call = client[method](params, (err, response) => {
+          if (err) {
+            setError(`gRPC Stream Error in ${method}: ${err.message}`);
+            setLoading(false);
+          }
+        });
+
+        call.on("data", (data) => {
+          setResponse(prev => [...prev, JSON.stringify(data, null, 2)].slice(-10)); // Keep last 10 messages
+        });
+        call.on("end", () => {
+          setLoading(false);
+          setActiveSubscriptions(prev => {
+            const newSubs = { ...prev };
+            delete newSubs[method];
+            return newSubs;
+          });
+        });
+
+        setActiveSubscriptions(prev => ({ ...prev, [method]: call }));
+      };
+
+      const stopSubscription = (method) => {
+        if (activeSubscriptions[method]) {
+          activeSubscriptions[method].cancel();
+          setActiveSubscriptions(prev => {
+            const newSubs = { ...prev };
+            delete newSubs[method];
+            return newSubs;
+          });
+        }
+      };
+
+      // RPC methods (from original script)
+      const rpcMethods = [
+        { method: "getHealth", params: [] },
+        { method: "getVersion", params: [] },
+        { method: "getClusterNodes", params: [] },
+        { method: "getBalance", params: [pubkey], disabled: !pubkey },
+        { method: "getAccountInfo", params: [pubkey, { encoding: "base64" }], disabled: !pubkey },
+        { method: "getProgramAccounts", params: ["11111111111111111111111111111111"], disabled: false },
+        { method: "getBlockHeight", params: [] },
+        { method: "getBlock", params: [parseInt(slot) || 0, { encoding: "json", transactionDetails: "full", rewards: true }], disabled: !slot },
+        { method: "getRecentBlockhash", params: [] },
+        { method: "getTransaction", params: [signature, { encoding: "json" }], disabled: !signature },
+        { method: "getSlot", params: [] },
+        { method: "getEpochInfo", params: [] },
+        { method: "getTokenAccountsByOwner", params: [pubkey, { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" }], disabled: !pubkey },
+        { method: "getVoteAccounts", params: [] },
+        { method: "getLeaderSchedule", params: [] },
+        { method: "getRecentPrioritizationFees", params: [] },
+      ];
+
+      // gRPC Geyser methods
+      const geyserMethods = [
+        {
+          method: "subscribeAccounts",
+          params: {
+            accounts: pubkey ? [pubkey] : [],
+            programs: programId ? [programId] : [],
+            filters: { account: { accounts_data: {} } }
+          },
+          disabled: !pubkey && !programId
+        },
+        {
+          method: "subscribeBlocks",
+          params: { commitment: "confirmed" },
+          disabled: false
+        },
+        {
+          method: "subscribeTransactions",
+          params: { vote: false, failed: false, accounts: pubkey ? [pubkey] : [] },
+          disabled: !pubkey
+        },
+        {
+          method: "subscribeSlots",
+          params: {},
+          disabled: false
+        }
+      ];
+
+      return (
+        <div className="container mx-auto">
+          <h1 className="text-3xl font-bold mb-4">Solana Node Multi-Tester (RPC + gRPC)</h1>
+          <p className="mb-4">Test your Solana node’s JSON-RPC (192.168.0.196:8899) and Yellowstone gRPC Geyser plugin (localhost:10000).</p>
+
+          {/* Tabs for RPC/gRPC */}
+          <div className="mb-4">
+            <button
+              onClick={() => setTab("rpc")}
+              className={`mr-2 p-2 rounded ${tab === "rpc" ? "bg-blue-600" : "bg-gray-600 hover:bg-gray-500"}`}
+            >
+              JSON-RPC Tests
+            </button>
+            <button
+              onClick={() => setTab("grpc")}
+              className={`p-2 rounded ${tab === "grpc" ? "bg-blue-600" : "bg-gray-600 hover:bg-gray-500"}`}
+            >
+              gRPC Geyser Tests
+            </button>
+          </div>
+
+          {/* Input Fields */}
+          <div className="mb-4">
+            <label className="block mb-2">Public Key (for RPC: getBalance, getAccountInfo, getTokenAccounts; gRPC: accounts, transactions):</label>
+            <input
+              type="text"
+              value={pubkey}
+              onChange={(e) => setPubkey(e.target.value)}
+              placeholder="Enter a Solana public key (e.g., EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)"
+              className="w-full p-2 bg-gray-800 rounded text-white"
+            />
+          </div>
+          <div className="mb-4">
+            <label className="block mb-2">Slot Number (for RPC: getBlock):</label>
+            <input
+              type="number"
+              value={slot}
+              onChange={(e) => setSlot(e.target.value)}
+              placeholder="Enter a slot number"
+              className="w-full p-2 bg-gray-800 rounded text-white"
+            />
+          </div>
+          <div className="mb-4">
+            <label className="block mb-2">Transaction Signature (for RPC: getTransaction):</label>
+            <input
+              type="text"
+              value={signature}
+              onChange={(e) => setSignature(e.target.value)}
+              placeholder="Enter a transaction signature"
+              className="w-full p-2 bg-gray-800 rounded text-white"
+            />
+          </div>
+          <div className="mb-4">
+            <label className="block mb-2">Program ID (for gRPC: subscribeAccounts):</label>
+            <input
+              type="text"
+              value={programId}
+              onChange={(e) => setProgramId(e.target.value)}
+              placeholder="Enter a program ID (e.g., TokenkegQfeZyiNwAJbNbGK7Qxnr6iVVsBjhMZyW7qhj2qVN)"
+              className="w-full p-2 bg-gray-800 rounded text-white"
+            />
+          </div>
+
+          {/* Method Buttons */}
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            {tab === "rpc" ? (
+              rpcMethods.map(({ method, params, disabled }) => (
+                <button
+                  key={method}
+                  onClick={() => sendRpcRequest(method, params)}
+                  disabled={disabled || loading}
+                  className={`p-2 rounded ${disabled || loading ? "bg-gray-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"}`}
+                >
+                  {method}
+                </button>
+              ))
+            ) : (
+              geyserMethods.map(({ method, params, disabled }) => (
+                <div key={method} className="flex space-x-2">
+                  <button
+                    onClick={() => startSubscription(method, params)}
+                    disabled={disabled || loading || activeSubscriptions[method]}
+                    className={`flex-1 p-2 rounded ${disabled || loading || activeSubscriptions[method] ? "bg-gray-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"}`}
+                  >
+                    Start {method}
+                  </button>
+                  <button
+                    onClick={() => stopSubscription(method)}
+                    disabled={!activeSubscriptions[method]}
+                    className={`flex-1 p-2 rounded ${!activeSubscriptions[method] ? "bg-gray-600 cursor-not-allowed" : "bg-red-600 hover:bg-red-700"}`}
+                  >
+                    Stop {method}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Output */}
+          {loading && <p className="text-yellow-400">Processing...</p>}
+          {error && (
+            <pre className="bg-red-900 p-4 rounded mb-4">Error: {error}</pre>
+          )}
+          {response.length > 0 && (
+            <pre className="bg-gray-800 p-4 rounded overflow-auto max-h-96">
+              {tab === "rpc" ? "RPC Response:" : "gRPC Stream Updates (last 10):"}
+              {response.join("\n---\n")}
+            </pre>
+          )}
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<SolanaMultiTester />);
+  </script>
+</body>
+</html>
