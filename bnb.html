@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BNB Node RPC Tester</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        button { margin: 5px; padding: 10px; }
+        #output { margin-top: 20px; border: 1px solid #ccc; padding: 10px; max-height: 400px; overflow-y: auto; }
+        .input-group { margin: 10px 0; }
+        label { margin-right: 10px; }
+        input { padding: 5px; }
+    </style>
+</head>
+<body>
+    <h1>BNB Node RPC Tester</h1>
+    <p>HTTP Endpoint: <strong id="httpEndpoint">http://192.168.0.196:8545</strong></p>
+    <p>WebSocket Endpoint: <strong id="wsEndpoint">ws://192.168.0.196:8546</strong></p>
+    <div>
+        <h3>HTTP RPC Methods</h3>
+        <button onclick="getBlockNumber()">Get Block Number</button>
+        <button onclick="getBalance()">Get Balance</button>
+        <button onclick="getTransactionCount()">Get Transaction Count</button>
+        <button onclick="getChainId()">Get Chain ID</button>
+        <button onclick="getGasPrice()">Get Gas Price</button>
+        <button onclick="getBlockByNumber()">Get Block</button>
+        <button onclick="getTransactionByHash()">Get Transaction</button>
+        <button onclick="estimateGas()">Estimate Gas</button>
+        <button onclick="getBlockReceipts()">Get Block Receipts</button>
+    </div>
+    <div>
+        <h3>WebSocket Subscriptions</h3>
+        <button onclick="subscribeNewHeads()">Subscribe New Blocks</button>
+        <button onclick="subscribePendingTransactions()">Subscribe Pending Tx</button>
+        <button onclick="unsubscribeAll()">Unsubscribe All</button>
+    </div>
+    <div class="input-group">
+        <label>Address: <input type="text" id="address" value="0xYourAddressHere" placeholder="Enter address"></label>
+        <label>Block Number: <input type="text" id="blockNumber" value="latest" placeholder="Enter block number or 'latest'"></label>
+        <label>Tx Hash: <input type="text" id="txHash" placeholder="Enter transaction hash"></label>
+    </div>
+    <div class="input-group">
+        <label>From: <input type="text" id="fromAddress" value="0xYourAddressHere" placeholder="Enter from address"></label>
+        <label>To: <input type="text" id="toAddress" placeholder="Enter to address"></label>
+        <label>Value (BNB): <input type="text" id="value" value="0.01" placeholder="Enter value in BNB"></label>
+    </div>
+    <div id="output">Results will appear here...</div>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+    <script>
+        // Initialize Web3 for HTTP and WebSocket
+        const httpProvider = new Web3('http://192.168.0.196:8545');
+        const wsProvider = new Web3(new Web3.providers.WebsocketProvider('ws://192.168.0.196:8546'));
+        let subscriptions = [];
+
+        // Utility to display results
+        function displayResult(method, result, error = null) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            if (error) {
+                output.innerHTML += `<p><strong>${timestamp} - ${method} Error:</strong> ${error}</p>`;
+            } else {
+                output.innerHTML += `<p><strong>${timestamp} - ${method}:</strong> ${JSON.stringify(result)}</p>`;
+            }
+            output.scrollTop = output.scrollHeight; // Auto-scroll to bottom
+        }
+
+        // HTTP RPC Functions
+        async function getBlockNumber() {
+            try {
+                const blockNumber = await httpProvider.eth.getBlockNumber();
+                displayResult('eth_blockNumber', blockNumber);
+            } catch (error) {
+                displayResult('eth_blockNumber', null, error.message);
+            }
+        }
+
+        async function getBalance() {
+            const address = document.getElementById('address').value;
+            if (!httpProvider.utils.isAddress(address)) {
+                displayResult('eth_getBalance', null, 'Invalid address');
+                return;
+            }
+            try {
+                const balance = await httpProvider.eth.getBalance(address);
+                const balanceInBNB = httpProvider.utils.fromWei(balance, 'ether');
+                displayResult('eth_getBalance', `${balanceInBNB} BNB`);
+            } catch (error) {
+                displayResult('eth_getBalance', null, error.message);
+            }
+        }
+
+        async function getTransactionCount() {
+            const address = document.getElementById('address').value;
+            if (!httpProvider.utils.isAddress(address)) {
+                displayResult('eth_getTransactionCount', null, 'Invalid address');
+                return;
+            }
+            try {
+                const count = await httpProvider.eth.getTransactionCount(address);
+                displayResult('eth_getTransactionCount', count);
+            } catch (error) {
+                displayResult('eth_getTransactionCount', null, error.message);
+            }
+        }
+
+        async function getChainId() {
+            try {
+                const chainId = await httpProvider.eth.getChainId();
+                displayResult('eth_chainId', chainId);
+            } catch (error) {
+                displayResult('eth_chainId', null, error.message);
+            }
+        }
+
+        async function getGasPrice() {
+            try {
+                const gasPrice = await httpProvider.eth.getGasPrice();
+                const gasPriceInGwei = httpProvider.utils.fromWei(gasPrice, 'gwei');
+                displayResult('eth_gasPrice', `${gasPriceInGwei} Gwei`);
+            } catch (error) {
+                displayResult('eth_gasPrice', null, error.message);
+            }
+        }
+
+        async function getBlockByNumber() {
+            const blockNumber = document.getElementById('blockNumber').value;
+            try {
+                const block = await httpProvider.eth.getBlock(blockNumber);
+                displayResult('eth_getBlockByNumber', block);
+            } catch (error) {
+                displayResult('eth_getBlockByNumber', null, error.message);
+            }
+        }
+
+        async function getTransactionByHash() {
+            const txHash = document.getElementById('txHash').value;
+            if (!txHash.match(/^0x[a-fA-F0-9]{64}$/)) {
+                displayResult('eth_getTransactionByHash', null, 'Invalid transaction hash');
+                return;
+            }
+            try {
+                const tx = await httpProvider.eth.getTransaction(txHash);
+                displayResult('eth_getTransactionByHash', tx);
+            } catch (error) {
+                displayResult('eth_getTransactionByHash', null, error.message);
+            }
+        }
+
+        async function estimateGas() {
+            const from = document.getElementById('fromAddress').value;
+            const to = document.getElementById('toAddress').value;
+            const value = document.getElementById('value').value;
+            if (!httpProvider.utils.isAddress(from) || (to && !httpProvider.utils.isAddress(to))) {
+                displayResult('eth_estimateGas', null, 'Invalid address');
+                return;
+            }
+            try {
+                const gas = await httpProvider.eth.estimateGas({
+                    from,
+                    to: to || undefined,
+                    value: httpProvider.utils.toWei(value, 'ether')
+                });
+                displayResult('eth_estimateGas', gas);
+            } catch (error) {
+                displayResult('eth_estimateGas', null, error.message);
+            }
+        }
+
+        async function getBlockReceipts() {
+            const blockNumber = document.getElementById('blockNumber').value;
+            try {
+                const receipts = await httpProvider.eth.getBlockReceipts(blockNumber);
+                displayResult('eth_getBlockReceipts', receipts);
+            } catch (error) {
+                displayResult('eth_getBlockReceipts', null, error.message);
+            }
+        }
+
+        // WebSocket Subscription Functions
+        function subscribeNewHeads() {
+            try {
+                const subscription = wsProvider.eth.subscribe('newHeads', (error, result) => {
+                    if (error) {
+                        displayResult('newHeads Subscription', null, error.message);
+                    } else {
+                        displayResult('newHeads Subscription', result);
+                    }
+                });
+                subscriptions.push(subscription);
+                displayResult('newHeads Subscription', 'Subscribed to new block headers');
+            } catch (error) {
+                displayResult('newHeads Subscription', null, error.message);
+            }
+        }
+
+        function subscribePendingTransactions() {
+            try {
+                const subscription = wsProvider.eth.subscribe('pendingTransactions', (error, result) => {
+                    if (error) {
+                        displayResult('pendingTransactions Subscription', null, error.message);
+                    } else {
+                        displayResult('pendingTransactions Subscription', result);
+                    }
+                });
+                subscriptions.push(subscription);
+                displayResult('pendingTransactions Subscription', 'Subscribed to pending transactions');
+            } catch (error) {
+                displayResult('pendingTransactions Subscription', null, error.message);
+            }
+        }
+
+        function unsubscribeAll() {
+            subscriptions.forEach(sub => {
+                sub.unsubscribe((error, success) => {
+                    if (success) {
+                        displayResult('Unsubscribe', 'Unsubscribed from a subscription');
+                    } else {
+                        displayResult('Unsubscribe', null, error.message);
+                    }
+                });
+            });
+            subscriptions = [];
+            displayResult('Unsubscribe All', 'Cleared all subscriptions');
+        }
+
+        // Handle WebSocket connection errors
+        wsProvider.eth.currentProvider.on('error', (error) => {
+            displayResult('WebSocket', null, `Connection error: ${error.message}`);
+        });
+
+        wsProvider.eth.currentProvider.on('connect', () => {
+            displayResult('WebSocket', 'Connected to WebSocket endpoint');
+        });
+
+        wsProvider.eth.currentProvider.on('end', () => {
+            displayResult('WebSocket', null, 'WebSocket connection closed');
+        });
+    </script>
+</body>
+</html>
